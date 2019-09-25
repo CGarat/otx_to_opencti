@@ -1,0 +1,5 @@
+*.cfg
+cache.sqlite
+test/
+.idea
+__pycache__
