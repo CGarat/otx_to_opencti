@@ -1,5 +1,3 @@
-#! /usr/bin/env python3
-
 import argparse
 import configparser
 import datetime
@@ -11,6 +9,7 @@ import requests_cache
 import stix2
 import sys
 import tldextract
+import yaml
 
 from pycti import OpenCTIConnectorHelper
 from pretty_printer import PrettyPrinter
@@ -21,6 +20,33 @@ CONF_FILE = '{}/config.cfg'.format(os.path.dirname(os.path.abspath(__file__)))
 SECTOR_MAPPINGS = {}
 REF_TLPS = {}
 
+
+PATTERNTYPES = ['yara', 'sigma', 'pcre', 'snort', 'suricata']
+OPENCTISTIX2 = {
+    'autonomous-system': {'type': 'autonomous-system', 'path': ['number'],
+                          'transform': {'operation': 'remove_string', 'value': 'AS'}},
+    'mac-addr': {'type': 'mac-addr', 'path': ['value']},
+    'domain': {'type': 'domain-name', 'path': ['value']},
+    'ipv4-addr': {'type': 'ipv4-addr', 'path': ['value']},
+    'ipv6-addr': {'type': 'ipv6-addr', 'path': ['value']},
+    'url': {'type': 'url', 'path': ['value']},
+    'email-address': {'type': 'email-addr', 'path': ['value']},
+    'email-subject': {'type': 'email-message', 'path': ['subject']},
+    'mutex': {'type': 'mutex', 'path': ['name']},
+    'file-name': {'type': 'file', 'path': ['name']},
+    'file-path': {'type': 'file', 'path': ['name']},
+    'file-md5': {'type': 'file', 'path': ['hashes', 'MD5']},
+    'file-sha1': {'type': 'file', 'path': ['hashes', 'SHA1']},
+    'file-sha256': {'type': 'file', 'path': ['hashes', 'SHA256']},
+    'directory': {'type': 'directory', 'path': ['path']},
+    'registry-key': {'type': 'windows-registry-key', 'path': ['key']},
+    'registry-key-value': {'type': 'windows-registry-value-type', 'path': ['data']},
+    'pdb-path': {'type': 'file', 'path': ['name']},
+    'windows-service-name': {'type': 'windows-service-ext', 'path': ['service_name']},
+    'windows-service-display-name': {'type': 'windows-service-ext', 'path': ['display_name']},
+    'x509-certificate-issuer': {'type': 'x509-certificate', 'path': ['issuer']},
+    'x509-certificate-serial-number': {'type': 'x509-certificate', 'path': ['serial_number']}
+}
 
 class OTX:
 
@@ -94,17 +120,10 @@ class OpenCTI:
                 'log_level': 'info'
             }
 
-        self.opencti_connector_helper = OpenCTIConnectorHelper(
-            self.config['connector_name'].lower(),
-            self.connector_config,
-            {
-                'hostname': self.config['rabbitmq_hostname'],
-                'port': int(self.config['rabbitmq_port']),
-                'username': self.config['rabbitmq_username'],
-                'password': self.config['rabbitmq_password']
-            },
-            self.connector_config['log_level']
-        )
+        confyml_path = os.path.dirname(os.path.abspath(__file__)) + '/config.yml'
+        confyml = yaml.load(open(confyml_path), Loader=yaml.FullLoader) if os.path.isfile(confyml_path) else {}
+
+        self.opencti_connector_helper = OpenCTIConnectorHelper(confyml)
 
     def _get_octi_sectors(self):
         res = requests.get(self.config['sectors_url'])
@@ -116,6 +135,22 @@ class OpenCTI:
             if 'name' in sector:
                 self.octi_sectors[sector['name'].upper()] = sector['id']
 
+
+    def resolve_type(self, type):
+        types = {
+            'filehash-md5': 'file-md5',
+            'filehash-sha1': 'file-sha1',
+            'filehash-sha256': 'file-sha256',
+            'filepath': 'file-name',
+            'ipv4': 'ipv4-addr',
+            'ipv6': 'ipv6-addr',
+            'hostname': 'domain',
+            'domain': 'domain',
+            'url': 'url'
+        }
+        if type in types:
+            return types[type]
+
     def process_reports(self, reports):
         if reports is None:
             printer.error("No results")
@@ -124,7 +159,6 @@ class OpenCTI:
         for report in reports:
             name = report["name"]
             id = report["id"]
-
             stix2_objects = []
             stix2_object_refs = []
 
@@ -148,7 +182,11 @@ class OpenCTI:
                     if sector in SECTOR_MAPPINGS:
                         # sector_ids.append(self.octi_sectors[SECTOR_MAPPINGS[sector]])
                         sector_name = SECTOR_MAPPINGS[sector]
-                        sector_id = self.octi_sectors[SECTOR_MAPPINGS[sector]]
+                        try:
+                            sector_id = self.octi_sectors[SECTOR_MAPPINGS[sector]]
+                        except Exception as e:
+                            printer.error(e)
+                            continue
                     else:
                         printer.debug(f"Looking for sector {sector}")
                         match = difflib.get_close_matches(sector, self.octi_sectors.keys(), 1)
@@ -232,6 +270,57 @@ class OpenCTI:
                         )
                     )
 
+                indicators = report["indicators"]
+                if indicators:
+                    for indicator in indicators:
+                        resolved_type = self.resolve_type(indicator["type"].lower())
+                        if resolved_type != None and indicator["is_active"]:
+
+                            observable_type = resolved_type
+                            observable_value = indicator["indicator"]
+                            pattern_type = 'stix'
+
+                            try:
+                                if observable_type in PATTERNTYPES:
+                                    pattern_type = observable_type
+                                elif observable_type not in OPENCTISTIX2:
+                                    printer.info("Not in stix2 dict")
+                                else:
+                                    if 'transform' in OPENCTISTIX2[observable_type]:
+                                        if OPENCTISTIX2[observable_type]['transform']['operation'] == 'remove_string':
+                                            observable_value = observable_value.replace(OPENCTISTIX2[observable_type]['transform']['value'], '')
+                                    lhs = stix2.ObjectPath(OPENCTISTIX2[observable_type]['type'], OPENCTISTIX2[observable_type]['path'])
+                                    observable_value = stix2.ObservationExpression(stix2.EqualityComparisonExpression(lhs, observable_value))
+                            except Exception as e:
+                                printer.error(e)
+                                printer.info("Could not determine suitable pattern")
+
+                            try:
+
+                                indicator_obj = stix2.Indicator(
+                                    name=indicator["indicator"],
+                                    description=indicator["description"],
+                                    pattern=str(observable_value),
+                                    valid_from=indicator["created"],
+                                    labels=['malicious-activity'],
+                                    created_by_ref=author,
+                                    object_marking_refs=[tlp_id],
+                                    custom_properties={
+                                        'x_opencti_observable_type': resolved_type,
+                                        'x_opencti_observable_value': indicator["indicator"],
+                                        'x_opencti_pattern_type': pattern_type
+                                    }
+
+                                )
+                                stix2_object_refs.append(indicator_obj)
+                                stix2_objects.append(indicator_obj)
+                            except Exception as e:
+                                printer.error(e)
+                                printer.info("Couldn't fetch indicator")
+
+                else:
+                    printer.error("No indicators")
+
                 report = stix2.Report(
                     name=name,
                     description=description,
@@ -245,12 +334,11 @@ class OpenCTI:
                     external_references=external_refs
                 )
                 stix2_objects.append(report)
-
-                bundle = stix2.Bundle(stix2_objects)
+                bundle = stix2.Bundle(stix2_objects).serialize()
                 if not self.dryrun:
-                    self.opencti_connector_helper.send_stix2_bundle(str(bundle), self.connector_config['entities'])
+                    self.opencti_connector_helper.send_stix2_bundle(bundle, None, True, False)
                     printer.info("Sending to OpenCTI")
-                printer.debug(str(bundle))
+                #printer.debug(str(bundle))
 
             else:
                 printer.debug(f"No sectors, disregarding '{name}'")

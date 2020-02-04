@@ -1,5 +1,0 @@
-configparser
-requests
-requests_cache
-stix2
-tldextract

@@ -1,0 +1,14 @@
+opencti:
+  url: XXX
+  token: XXX
+
+connector:
+  id: XXX
+  type: 'EXTERNAL_IMPORT'
+  name: 'OTX'
+  scope: 'otx'
+  confidence_level: 2
+  update_existing_data: True
+  log_level: 'info'
+  interval: 0
+  entities: 'reports, intrusion-set, identity' 

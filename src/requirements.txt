@@ -1,0 +1,7 @@
+configparser
+requests
+requests_cache
+stix2
+tldextract
+PyYAML
+antlr4-python3-runtime==4.7.1

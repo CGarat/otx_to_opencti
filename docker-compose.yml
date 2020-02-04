@@ -1,0 +1,21 @@
+version: '3'
+services:
+  connector-otx:
+    image: xxx
+    environment:
+      - OPENCTI_URL=XXX
+      - OPENCTI_TOKEN=XXX
+      - CONNECTOR_ID=XXX
+      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_NAME=OTX
+      - CONNECTOR_SCOPE=otx
+      - CONNECTOR_CONFIDENCE_LEVEL=2
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_LOG_LEVEL=info
+      - OTX_URL=https://otx.alienvault.com
+      - OTX_KEY=XXX
+    restart: always
+networks:
+  default:
+    external:
+      name: XXX
